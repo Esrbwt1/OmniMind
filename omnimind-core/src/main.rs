@@ -1,5 +1,7 @@
 // src/main.rs for omnimind-core
 use std::io::{self, Write};
+use std::fs; // For file system operations
+use std::path::Path; // For working with file paths
 
 // Define an enum for our commands
 #[derive(Debug)] // Allow printing the enum for debugging
@@ -39,6 +41,53 @@ fn parse_input(input: &str) -> Command {
             }
         }
         _ => Command::Unknown(command_str),
+    }
+}
+
+fn list_directory_contents(dir_path_str: &str) {
+    let path = Path::new(dir_path_str);
+
+    if !path.exists() {
+        println!("Error: Path '{}' does not exist.", dir_path_str);
+        return;
+    }
+
+    if !path.is_dir() {
+        println!("Error: Path '{}' is not a directory.", dir_path_str);
+        // Optionally, if it's a file, just print its name or details
+        // For now, we only list contents of directories for 'ls'
+        return;
+    }
+
+    println!("Contents of '{}':", dir_path_str);
+    match fs::read_dir(path) {
+        Ok(entries) => {
+            for entry_result in entries {
+                match entry_result {
+                    Ok(entry) => {
+                        let entry_path = entry.path();
+                        let file_name = entry.file_name();
+                        let file_name_str = file_name.to_string_lossy(); // Convert OsString to String
+
+                        if entry_path.is_dir() {
+                            println!("  {}/ (Directory)", file_name_str);
+                        } else if entry_path.is_file() {
+                            // You could add file size or other metadata here later
+                            // let metadata = fs::metadata(&entry_path).ok();
+                            // let size = metadata.map_or(0, |m| m.len());
+                            // println!("  {} (File, {} bytes)", file_name_str, size);
+                            println!("  {} (File)", file_name_str);
+                        } else {
+                            println!("  {} (Other)", file_name_str); // Symlinks, etc.
+                        }
+                    }
+                    Err(e) => println!("  Error reading entry: {}", e),
+                }
+            }
+        }
+        Err(e) => {
+            println!("Error reading directory contents: {}", e);
+        }
     }
 }
 
@@ -82,15 +131,28 @@ fn main() {
                 println!("Exiting OmniMind Core. Goodbye!");
                 break;
             }
+            // ... inside the main loop's match command { ... }
             Command::ListFiles(path_opt) => {
                 match path_opt {
-                    Some(path) => println!("Placeholder: Listing files in directory '{}'...", path),
-                    None => println!("Placeholder: Listing files in current directory..."),
+                    Some(path_str) => {
+                        println!("Placeholder: Listing files in directory '{}'...", path_str);
+                        // Call our new function here
+                        list_directory_contents(&path_str);
+                    }
+                    None => {
+                        println!("Placeholder: Listing files in current directory...");
+                        // Get current directory and call our new function
+                        match std::env::current_dir() {
+                            Ok(current_path_buf) => {
+                                match current_path_buf.to_str() {
+                                    Some(current_path_str) => list_directory_contents(current_path_str),
+                                    None => println!("Error: Could not convert current path to string."),
+                                }
+                            }
+                            Err(e) => println!("Error getting current directory: {}", e),
+                        }
+                    }
                 }
-                // Future: Implement actual file listing logic here
-                println!("  - file1.txt");
-                println!("  - my_document.omni");
-                println!("  - sub_folder/");
             }
             Command::CreateNote(title) => {
                 println!("Placeholder: Creating note with title '{}'...", title);
