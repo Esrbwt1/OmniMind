@@ -131,16 +131,13 @@ fn main() {
                 println!("Exiting OmniMind Core. Goodbye!");
                 break;
             }
-            // ... inside the main loop's match command { ... }
             Command::ListFiles(path_opt) => {
                 match path_opt {
                     Some(path_str) => {
-                        println!("Placeholder: Listing files in directory '{}'...", path_str);
                         // Call our new function here
                         list_directory_contents(&path_str);
                     }
                     None => {
-                        println!("Placeholder: Listing files in current directory...");
                         // Get current directory and call our new function
                         match std::env::current_dir() {
                             Ok(current_path_buf) => {
