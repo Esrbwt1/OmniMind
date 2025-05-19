@@ -1,7 +1,9 @@
 // src/main.rs for omnimind-core
-use std::io::{self, Write};
-use std::fs; // For file system operations
-use std::path::Path; // For working with file paths
+use std::io::{self, Write}; // Write is already there, good.
+use std::fs;
+use std::path::Path;
+use std::fs::File;
+use chrono;
 
 // Define an enum for our commands
 #[derive(Debug)] // Allow printing the enum for debugging
@@ -122,8 +124,8 @@ fn main() {
             Command::Help => {
                 println!("Available commands:");
                 println!("  echo <text>          - Prints back the text you provide.");
-                println!("  ls [path]            - Lists files (placeholder). Optional path.");
-                println!("  create_note <title>  - Creates a new note (placeholder).");
+                println!("  ls [path]            - Lists files and directories.");
+                println!("  create_note <title>  - Creates a new text note in the 'omni_notes' directory.");
                 println!("  help                 - Shows this help message.");
                 println!("  quit / exit          - Exits OmniMind Core.");
             }
@@ -152,9 +154,58 @@ fn main() {
                 }
             }
             Command::CreateNote(title) => {
-                println!("Placeholder: Creating note with title '{}'...", title);
-                // Future: Implement actual note creation logic here
-                println!("Note '{}' created successfully (placeholder).", title);
+                // Let's create a notes directory if it doesn't exist in the current path
+                let notes_dir = Path::new("./omni_notes");
+                if !notes_dir.exists() {
+                    match fs::create_dir(notes_dir) {
+                        Ok(_) => println!("Created notes directory: ./omni_notes/"),
+                        Err(e) => {
+                            println!("Error creating notes directory './omni_notes/': {}", e);
+                            // Optionally, we could decide to not proceed if dir creation fails
+                            // For now, we'll let it try to create the file anyway if dir creation failed
+                            // but the file path construction will still use it.
+                        }
+                    }
+                }
+
+                // Sanitize title to be a safe filename (simple sanitization for now)
+                let sane_title = title
+                    .chars()
+                    .filter(|c| c.is_alphanumeric() || *c == ' ' || *c == '-' || *c == '_')
+                    .collect::<String>()
+                    .replace(" ", "_"); // Replace spaces with underscores
+
+                if sane_title.is_empty() {
+                    println!("Error: Note title is invalid after sanitization (became empty).");
+                } else {
+                    let file_name = format!("{}.omni.txt", sane_title);
+                    let file_path = notes_dir.join(&file_name); // Path: ./omni_notes/Sane_Title.omni.txt
+
+                    println!("Attempting to create note: '{}' at '{}'", title, file_path.display());
+
+                    match File::create(&file_path) {
+                        Ok(mut file) => {
+                            // Optionally write some placeholder content
+                            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                            let content = format!(
+                                "OmniMind Note\nTitle: {}\nCreated: {}\n\n---\n(Start your note here)\n",
+                                title, timestamp
+                            );
+                            match file.write_all(content.as_bytes()) {
+                                Ok(_) => {
+                                    println!("Successfully created note: '{}'", file_path.display());
+                                    println!("Original title: '{}'", title);
+                                }
+                                Err(e) => {
+                                    println!("Successfully created empty note: '{}', but failed to write content: {}", file_path.display(), e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("Error creating note file '{}': {}", file_path.display(), e);
+                        }
+                    }
+                }
             }
             Command::Unknown(cmd_str) => {
                 if !cmd_str.is_empty() { // Avoid printing for empty unrecognized commands
