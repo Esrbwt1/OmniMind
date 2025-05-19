@@ -1,0 +1,35 @@
+# IDE and OS specific
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*~
+*.bak
+*.tmp
+
+# Rust target directory (already in omnimind-core/.gitignore but good for root too)
+**/target/
+
+# Node modules (already in sub-project .gitignores but good for root too)
+**/node_modules/
+
+# Hardhat artifacts cache
+**/cache/ # Specifically for omnimind-contracts/cache
+
+# Build output directories
+build/
+dist/
+
+# Log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables file
+.env
+.env.local
+.env.*.local
+
+# IPFS data (if you were to run a local daemon storing data in the project)
+# ipfs-data/ # Uncomment if you ever store IPFS repo data here
