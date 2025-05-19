@@ -8,10 +8,11 @@ function App() {
   const [userAccount, setUserAccount] = useState(null);
   const [mindCoinBalance, setMindCoinBalance] = useState("0");
   const [provider, setProvider] = useState(null);
-  // eslint-disable-next-line no-unused-vars
   const [signer, setSigner] = useState(null);
   const [mindCoinContract, setMindCoinContract] = useState(null);
   const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [transferToAddress, setTransferToAddress] = useState("");
+  const [transferAmount, setTransferAmount] = useState("");
 
 
 // Effect to initialize provider and potentially signer if wallet is already connected
@@ -145,6 +146,70 @@ function App() {
     }
   };
 
+
+  const handleTransferMindCoin = async () => {
+    if (!mindCoinContract || !userAccount || !signer) {
+      setFeedbackMessage("Please connect your wallet first.");
+      return;
+    }
+    if (!ethers.isAddress(transferToAddress)) {
+      setFeedbackMessage("Invalid recipient address.");
+      return;
+    }
+    if (isNaN(parseFloat(transferAmount)) || parseFloat(transferAmount) <= 0) {
+      setFeedbackMessage("Invalid transfer amount.");
+      return;
+    }
+
+    try {
+      setFeedbackMessage(`Initiating transfer of ${transferAmount} MIND to ${transferToAddress.substring(0,6)}...`);
+      
+      // Ensure we are on Sepolia
+      const network = await provider.getNetwork();
+      if (network.chainId !== BigInt(11155111)) {
+        setFeedbackMessage("Please switch to the Sepolia test network to transfer MindCoin.");
+        return;
+      }
+
+      const amountInWei = ethers.parseUnits(transferAmount, 18); // Convert to smallest unit (18 decimals)
+      
+      // Estimate gas (optional, but good for UX to catch potential out-of-gas errors early)
+      // try {
+      //   const estimatedGas = await mindCoinContract.transfer.estimateGas(transferToAddress, amountInWei);
+      //   console.log("Estimated gas for transfer:", estimatedGas.toString());
+      // } catch (gasError) {
+      //   console.error("Gas estimation failed:", gasError);
+      //   setFeedbackMessage(`Transaction likely to fail: ${gasError.reason || gasError.message}`);
+      //   return;
+      // }
+
+      const tx = await mindCoinContract.transfer(transferToAddress, amountInWei);
+      setFeedbackMessage(`Transfer transaction sent: ${tx.hash.substring(0,10)}... Waiting for confirmation...`);
+
+      await tx.wait(); // Wait for the transaction to be mined
+
+      setFeedbackMessage(`Successfully transferred ${transferAmount} MIND to ${transferToAddress.substring(0,6)}...`);
+      
+      // Clear input fields
+      setTransferToAddress("");
+      setTransferAmount("");
+
+      // Refresh balance (could also optimistically update)
+      const balance = await mindCoinContract.balanceOf(userAccount);
+      setMindCoinBalance(ethers.formatUnits(balance, 18));
+
+    } catch (error) {
+      console.error("Error transferring MindCoin:", error);
+      let userMessage = "Error transferring MindCoin.";
+      if (error.reason) {
+        userMessage += ` Reason: ${error.reason}`;
+      } else if (error.message) {
+          userMessage += ` Details: ${error.message.substring(0,100)}...`;
+      }
+      setFeedbackMessage(userMessage);
+    }
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -166,7 +231,32 @@ function App() {
             </button>
           )}
         </section>
-
+        {userAccount && (
+          <section id="transfer-mindcoin">
+            <h2>Transfer MindCoin</h2>
+            <div>
+              <input
+                type="text"
+                placeholder="Recipient Address (0x...)"
+                value={transferToAddress}
+                onChange={(e) => setTransferToAddress(e.target.value)}
+                style={{ width: 'calc(80% - 20px)', padding: '10px', margin: '5px 0' }}
+              />
+            </div>
+            <div>
+              <input
+                type="text" // Use text for now, can add number validation later
+                placeholder="Amount (e.g., 100)"
+                value={transferAmount}
+                onChange={(e) => setTransferAmount(e.target.value)}
+                style={{ width: 'calc(80% - 20px)', padding: '10px', margin: '5px 0' }}
+              />
+            </div>
+            <button onClick={handleTransferMindCoin} style={{ padding: '10px', marginTop: '10px' }}>
+              Transfer MindCoin
+            </button>
+          </section>
+        )} 
         <section id="core-status">
           <h2>OmniMind Core Status:</h2>
           <p><em>(Connecting to local OmniMind Core services...)</em></p>
