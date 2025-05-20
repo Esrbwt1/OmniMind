@@ -5,7 +5,7 @@ use std::path::Path;
 use std::fs::File;
 use chrono;
 use actix_cors::Cors;
-use reqwest;
+use reqwest::multipart;
 
 // Actix Web and Serde imports
 use actix_web::{web, App, HttpServer, Responder, HttpResponse};
@@ -40,6 +40,16 @@ struct IpfsIdResponse {
     #[serde(alias = "ID")] // Allow deserializing from "ID"
     id: String,
     // We can add other fields like PublicKey if needed later
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct IpfsAddResponse {
+    #[serde(alias = "Name")]
+    name: String,
+    #[serde(alias = "Hash")]
+    hash: String, // This is the CID
+    #[serde(alias = "Size")]
+    size: String,
 }
 
 // This function will now process the command and return a CommandResponse
@@ -84,6 +94,8 @@ async fn process_omni_command(raw_command_str: &str) -> CommandResponse {
                 "  ls [path]            - Lists files and directories.",
                 "  create_note <title>  - Creates a new text note in the 'omni_notes' directory.",
                 "  ipfs_id              - Fetches the ID of the local IPFS node.", // NEW
+                "  ipfs_add <file_path> - Adds a local file to IPFS and returns its CID.",
+                "  ipfs_cat <cid>       - Retrieves and displays content from IPFS for a given CID.",
                 "  help                 - Shows this help message.",
                 // "quit" / "exit" are not useful for a server endpoint this way
             ].join("\n");
@@ -111,6 +123,32 @@ async fn process_omni_command(raw_command_str: &str) -> CommandResponse {
         }
         "ipfs_id" => { // NOW WE CAN CALL THE ASYNC FUNCTION
             get_ipfs_id_for_api().await // Await the async call
+        }
+        "ipfs_add" => { 
+            if args_str.is_empty() {
+                CommandResponse {
+                    status: "error".to_string(),
+                    message: "Usage: ipfs_add <local_file_path>".to_string(),
+                    data: None,
+                }
+            } else {
+                // For now, assume the first argument is the full path.
+                // In a real OS, you'd handle relative paths, tilde expansion etc.
+                let file_path_to_add = args_str.join(" "); // If path has spaces
+                add_file_to_ipfs_for_api(&file_path_to_add).await
+            }
+        }
+        "ipfs_cat" => {
+            if args_str.is_empty() {
+                CommandResponse {
+                    status: "error".to_string(),
+                    message: "Usage: ipfs_cat <ipfs_cid>".to_string(),
+                    data: None,
+                }
+            } else {
+                let cid_to_cat = &args_str[0]; // Assume CID is the first argument
+                cat_file_from_ipfs_for_api(cid_to_cat).await
+            }
         }
         _ => CommandResponse {
             status: "error".to_string(),
@@ -225,6 +263,146 @@ async fn get_ipfs_id_for_api() -> CommandResponse {
         Err(e) => CommandResponse {
             status: "error".to_string(),
             message: format!("Failed to connect to IPFS API: {}. Ensure IPFS daemon is running and API server is enabled at {}.", e, ipfs_api_url),
+            data: None,
+        },
+    }
+}
+
+async fn add_file_to_ipfs_for_api(local_file_path_str: &str) -> CommandResponse {
+    let file_path = Path::new(local_file_path_str);
+
+    if !file_path.exists() {
+        return CommandResponse { status: "error".to_string(), message: format!("Local file '{}' does not exist.", local_file_path_str), data: None };
+    }
+    if !file_path.is_file() {
+        return CommandResponse { status: "error".to_string(), message: format!("Path '{}' is not a file.", local_file_path_str), data: None };
+    }
+
+    // Read file content. For large files, streaming would be better.
+    // For MVP, reading into memory is simpler.
+    let file_content_bytes = match fs::read(file_path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            return CommandResponse { status: "error".to_string(), message: format!("Failed to read local file '{}': {}", local_file_path_str, e), data: None };
+        }
+    };
+
+    let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+
+    // Create a multipart part for the file
+    let part = match multipart::Part::bytes(file_content_bytes)
+        .file_name(file_name.clone()) // Set the filename for the part
+        .mime_str("application/octet-stream") 
+    {
+        Ok(p) => p,
+        Err(e) => {
+             return CommandResponse { status: "error".to_string(), message: format!("Failed to create multipart part for file: {}", e), data: None };
+        }
+    };
+
+
+    // Create the multipart form
+    let form = multipart::Form::new().part("file", part); // The field name "file" is expected by IPFS /add
+
+    let ipfs_api_url = "http://127.0.0.1:5001/api/v0/add";
+    let client = reqwest::Client::new();
+
+    match client.post(ipfs_api_url)
+        .multipart(form)
+        .send()
+        .await 
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<IpfsAddResponse>().await {
+                    Ok(add_data) => CommandResponse {
+                        status: "success".to_string(),
+                        message: format!("File '{}' successfully added to IPFS.", add_data.name),
+                        data: Some(serde_json::json!({
+                            "fileName": add_data.name,
+                            "cid": add_data.hash,
+                            "size": add_data.size
+                        })),
+                    },
+                    Err(e) => CommandResponse {
+                        status: "error".to_string(),
+                        message: format!("Successfully uploaded but failed to parse IPFS add response: {}", e),
+                        data: None, // You could include raw response text here if helpful
+                    },
+                }
+            } else {
+                let status_code = response.status();
+                let error_text = response.text().await.unwrap_or_else(|e| format!("Unknown error and failed to get error text: {}", e));
+                CommandResponse {
+                    status: "error".to_string(),
+                    message: format!("IPFS API /add request failed with status {}: {}", status_code, error_text),
+                    data: None,
+                }
+            }
+        }
+        Err(e) => CommandResponse {
+            status: "error".to_string(),
+            message: format!("Failed to connect to IPFS API for /add: {}. Ensure IPFS daemon is running.", e),
+            data: None,
+        },
+    }
+}
+
+
+async fn cat_file_from_ipfs_for_api(cid_str: &str) -> CommandResponse {
+    // Basic CID validation (very simple, not exhaustive)
+    if !cid_str.starts_with("Qm") && !cid_str.starts_with("ba") { // Common v0 and v1 prefixes
+        return CommandResponse { status: "error".to_string(), message: format!("Invalid CID format: '{}'. CIDs usually start with 'Qm' (v0) or 'ba' (v1).", cid_str), data: None };
+    }
+    if cid_str.len() < 46 { // Typical CID length
+         return CommandResponse { status: "error".to_string(), message: format!("CID '{}' seems too short.", cid_str), data: None };
+    }
+
+
+    let ipfs_api_url = format!("http://127.0.0.1:5001/api/v0/cat?arg={}", cid_str);
+    let client = reqwest::Client::new();
+
+    match client.post(&ipfs_api_url) // IPFS /cat is a POST endpoint expecting the CID as an arg
+        .send()
+        .await 
+    {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.text().await { // Get the content as text
+                    Ok(content) => CommandResponse {
+                        status: "success".to_string(),
+                        message: format!("Successfully retrieved content for CID: {}", cid_str),
+                        data: Some(serde_json::json!({ "cid": cid_str, "content": content })),
+                    },
+                    Err(e) => CommandResponse {
+                        status: "error".to_string(),
+                        message: format!("Successfully connected but failed to read content for CID {}: {}", cid_str, e),
+                        data: None,
+                    },
+                }
+            } else {
+                let status_code = response.status();
+                // Try to get error text from IPFS, which might be plain text or JSON
+                let error_body = response.text().await.unwrap_or_else(|e| format!("Failed to read error body: {}", e));
+                let mut error_message_from_ipfs = error_body.clone();
+
+                // IPFS errors are sometimes JSON like {"Message": "...", "Code": 0, "Type": "error"}
+                if let Ok(json_error) = serde_json::from_str::<serde_json::Value>(&error_body) {
+                    if let Some(msg) = json_error.get("Message").and_then(|v| v.as_str()) {
+                        error_message_from_ipfs = msg.to_string();
+                    }
+                }
+                
+                CommandResponse {
+                    status: "error".to_string(),
+                    message: format!("IPFS API /cat request for CID {} failed with status {}: {}", cid_str, status_code, error_message_from_ipfs),
+                    data: None,
+                }
+            }
+        }
+        Err(e) => CommandResponse {
+            status: "error".to_string(),
+            message: format!("Failed to connect to IPFS API for /cat (CID: {}): {}. Ensure IPFS daemon is running.", cid_str, e),
             data: None,
         },
     }
