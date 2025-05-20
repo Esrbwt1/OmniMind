@@ -5,9 +5,10 @@ use std::path::Path;
 use std::fs::File;
 use chrono;
 use actix_cors::Cors;
+use reqwest;
 
 // Actix Web and Serde imports
-use actix_web::{web, App, HttpServer, Responder, HttpResponse, Error as ActixError};
+use actix_web::{web, App, HttpServer, Responder, HttpResponse};
 use serde::{Serialize, Deserialize};
 
 // --- Command Definition and Parsing Logic (from previous steps, slightly adapted) ---
@@ -34,9 +35,16 @@ struct CommandResponse {
     data: Option<serde_json::Value>, // Optional structured data (e.g., file list)
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct IpfsIdResponse {
+    #[serde(alias = "ID")] // Allow deserializing from "ID"
+    id: String,
+    // We can add other fields like PublicKey if needed later
+}
+
 // This function will now process the command and return a CommandResponse
 // It's adapted to be called by the web handler.
-fn process_omni_command(raw_command_str: &str) -> CommandResponse {
+async fn process_omni_command(raw_command_str: &str) -> CommandResponse {
     let parts: Vec<&str> = raw_command_str.trim().split_whitespace().collect();
     if parts.is_empty() {
         return CommandResponse {
@@ -75,6 +83,7 @@ fn process_omni_command(raw_command_str: &str) -> CommandResponse {
                 "  echo <text>          - Prints back the text you provide.",
                 "  ls [path]            - Lists files and directories.",
                 "  create_note <title>  - Creates a new text note in the 'omni_notes' directory.",
+                "  ipfs_id              - Fetches the ID of the local IPFS node.", // NEW
                 "  help                 - Shows this help message.",
                 // "quit" / "exit" are not useful for a server endpoint this way
             ].join("\n");
@@ -99,6 +108,9 @@ fn process_omni_command(raw_command_str: &str) -> CommandResponse {
                 let title = args_str.join(" ");
                 create_note_for_api(&title)
             }
+        }
+        "ipfs_id" => { // NOW WE CAN CALL THE ASYNC FUNCTION
+            get_ipfs_id_for_api().await // Await the async call
         }
         _ => CommandResponse {
             status: "error".to_string(),
@@ -177,12 +189,53 @@ fn create_note_for_api(title: &str) -> CommandResponse {
     }
 }
 
+async fn get_ipfs_id_for_api() -> CommandResponse {
+    let ipfs_api_url = "http://127.0.0.1:5001/api/v0/id"; // Default IPFS daemon API URL for id
+
+    // Ensure your IPFS Desktop daemon is running and API is accessible at this address.
+    // You can test in browser: http://127.0.0.1:5001/api/v0/id (might show error if not from allowed origin, but daemon should log access attempt)
+    // Or with curl: curl -X POST http://127.0.0.1:5001/api/v0/id
+
+    let client = reqwest::Client::new();
+    match client.post(ipfs_api_url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.json::<IpfsIdResponse>().await {
+                    Ok(ipfs_id_data) => CommandResponse {
+                        status: "success".to_string(),
+                        message: "Successfully fetched IPFS Node ID.".to_string(),
+                        data: Some(serde_json::json!({ "ipfsNodeId": ipfs_id_data.id })),
+                    },
+                    Err(e) => CommandResponse {
+                        status: "error".to_string(),
+                        message: format!("Failed to parse IPFS ID response: {}", e),
+                        data: None,
+                    },
+                }
+            } else {
+                let status_code = response.status(); // Get status BEFORE consuming response
+                let error_text = response.text().await.unwrap_or_else(|e| format!("Unknown error and failed to get error text: {}", e));
+                CommandResponse {
+                    status: "error".to_string(),
+                    message: format!("IPFS API request failed with status {}: {}", status_code, error_text), // Use status_code
+                    data: None,
+                }
+            }
+        }
+        Err(e) => CommandResponse {
+            status: "error".to_string(),
+            message: format!("Failed to connect to IPFS API: {}. Ensure IPFS daemon is running and API server is enabled at {}.", e, ipfs_api_url),
+            data: None,
+        },
+    }
+}
+
 // --- Actix Web Handler ---
 async fn handle_command_request(req: web::Json<CommandRequest>) -> impl Responder {
     // Log the received command (optional)
     // println!("Received command via API: {}", req.raw_command);
     
-    let response = process_omni_command(&req.raw_command);
+    let response = process_omni_command(&req.raw_command).await; // Add .await here
     HttpResponse::Ok().json(response) // Always return Ok for the HTTP response itself; actual success/error is in JSON
 }
 
