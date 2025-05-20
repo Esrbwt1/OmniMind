@@ -1,0 +1,6 @@
+OmniMind Note
+Title: My PowerShell Note
+Created: 2025-05-20 12:05:36
+
+---
+(Start your note here)

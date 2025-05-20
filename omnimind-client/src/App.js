@@ -13,6 +13,9 @@ function App() {
   const [feedbackMessage, setFeedbackMessage] = useState("");
   const [transferToAddress, setTransferToAddress] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
+  const [coreCommand, setCoreCommand] = useState("");
+  const [coreResponse, setCoreResponse] = useState(null); // To store the structured response
+  const [isCoreLoading, setIsCoreLoading] = useState(false);
 
 
 // Effect to initialize provider and potentially signer if wallet is already connected
@@ -210,6 +213,56 @@ function App() {
     }
   };
 
+  const sendCommandToCore = async () => {
+    if (!coreCommand.trim()) {
+      setFeedbackMessage("Please enter a command for OmniMind Core.");
+      return;
+    }
+
+    setIsCoreLoading(true);
+    setCoreResponse(null); // Clear previous response
+    setFeedbackMessage("Sending command to OmniMind Core...");
+
+    try {
+      const response = await fetch("http://localhost:3030/command", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ raw_command: coreCommand }),
+      });
+
+      if (!response.ok) {
+        // Try to get error message from server if possible, or use status text
+        let errorMsg = `HTTP error! status: ${response.status}`;
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.message || errorMsg; // Assuming server sends JSON error with a message field
+        } catch (e) {
+          // Ignore if error response is not JSON
+        }
+        throw new Error(errorMsg);
+      }
+
+      const data = await response.json(); // This is our CommandResponse struct
+      setCoreResponse(data);
+      
+      if (data.status === "success") {
+          setFeedbackMessage("OmniMind Core processed command successfully.");
+      } else {
+          setFeedbackMessage(`OmniMind Core returned an error: ${data.message}`);
+      }
+      setCoreCommand(""); // Clear input field after sending
+
+    } catch (error) {
+      console.error("Error sending command to Core API:", error);
+      setFeedbackMessage(`Error communicating with OmniMind Core: ${error.message}`);
+      setCoreResponse({ status: "error", message: `Network or server error: ${error.message}`, data: null });
+    } finally {
+      setIsCoreLoading(false);
+    }
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -264,13 +317,40 @@ function App() {
         </section>
 
         <section id="ai-interaction">
-          <h2>AI Command Interface:</h2>
-          <input type="text" placeholder="Type your command to OmniMind..." style={{ width: '80%', padding: '10px', margin: '10px 0' }} />
-          <button onClick={() => alert('Command processing not yet implemented!')} style={{ padding: '10px' }}>
-            Send Command
-          </button>
-        </section>
+          <h2>OmniMind Core Interface</h2>
+          <div style={{ marginBottom: '10px' }}>
+            <input
+              type="text"
+              placeholder="Type your command to OmniMind Core (e.g., help, ls, create_note title)"
+              value={coreCommand}
+              onChange={(e) => setCoreCommand(e.target.value)}
+              onKeyPress={(e) => { if (e.key === 'Enter') sendCommandToCore(); }}
+              style={{ width: 'calc(80% - 20px)', padding: '10px', marginRight: '5px' }}
+              disabled={isCoreLoading}
+            />
+            <button onClick={sendCommandToCore} style={{ padding: '10px' }} disabled={isCoreLoading}>
+              {isCoreLoading ? "Sending..." : "Send to Core"}
+            </button>
+          </div>
 
+          {coreResponse && (
+            <div id="core-response-area" style={{ marginTop: '15px', padding: '10px', border: '1px solid #ccc', whiteSpace: 'pre-wrap', textAlign: 'left', maxHeight: '300px', overflowY: 'auto' }}>
+              <h4>Core Response:</h4>
+              <p><strong>Status:</strong> {coreResponse.status}</p>
+              <p><strong>Message:</strong></p>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{coreResponse.message}</pre>
+              {coreResponse.data && (
+                <div>
+                  <p><strong>Data:</strong></p>
+                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                    {JSON.stringify(coreResponse.data, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+        
         {/* We'll keep the P2P info section as a placeholder for now */}
         <section id="p2p-info">
           <h2>P2P Network:</h2>
