@@ -14,11 +14,12 @@ function App() {
   const [transferToAddress, setTransferToAddress] = useState("");
   const [transferAmount, setTransferAmount] = useState("");
   const [coreCommand, setCoreCommand] = useState("");
-  const [coreResponse, setCoreResponse] = useState(null); // To store the structured response
+  const [coreResponse, setCoreResponse] = useState(null);
   const [isCoreLoading, setIsCoreLoading] = useState(false);
   const [ipfsFileToAdd, setIpfsFileToAdd] = useState(null);
   const [cidToCat, setCidToCat] = useState("");
-
+  const [ipfsAddPath, setIpfsAddPath] = useState("");
+  const [ipfsCatCid, setIpfsCatCid] = useState("");
 
 // Effect to initialize provider and potentially signer if wallet is already connected
   useEffect(() => {
@@ -265,6 +266,87 @@ function App() {
     }
   };
 
+  const handleIpfsAdd = async () => {
+    if (!ipfsAddPath.trim()) {
+      setFeedbackMessage("Please enter a local file path to add to IPFS.");
+      return;
+    }
+    // Construct the raw command string for the backend
+    const rawCommand = `ipfs_add ${ipfsAddPath}`;
+    
+    setIsCoreLoading(true);
+    setCoreResponse(null);
+    setFeedbackMessage("Adding file to IPFS via OmniMind Core...");
+
+    try {
+      const response = await fetch("http://localhost:3030/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw_command: rawCommand }),
+      });
+      // ... (identical response handling logic as in sendCommandToCore) ...
+      if (!response.ok) {
+        let errorMsg = `HTTP error! status: ${response.status}`;
+        try { const errorData = await response.json(); errorMsg = errorData.message || errorMsg; } catch (e) { /* ignore */ }
+        throw new Error(errorMsg);
+      }
+      const data = await response.json();
+      setCoreResponse(data);
+      if (data.status === "success") {
+          setFeedbackMessage("IPFS add command processed successfully.");
+          setIpfsAddPath(""); // Clear input
+      } else {
+          setFeedbackMessage(`IPFS add command error: ${data.message}`);
+      }
+    } catch (error) {
+      console.error("Error in handleIpfsAdd:", error);
+      setFeedbackMessage(`Error adding to IPFS: ${error.message}`);
+      setCoreResponse({ status: "error", message: `Network or server error: ${error.message}`, data: null });
+    } finally {
+      setIsCoreLoading(false);
+    }
+  };
+
+  const handleIpfsCat = async () => {
+    if (!ipfsCatCid.trim()) {
+      setFeedbackMessage("Please enter an IPFS CID to retrieve.");
+      return;
+    }
+    const rawCommand = `ipfs_cat ${ipfsCatCid}`;
+
+    setIsCoreLoading(true);
+    setCoreResponse(null);
+    setFeedbackMessage("Getting file from IPFS via OmniMind Core...");
+
+    try {
+      const response = await fetch("http://localhost:3030/command", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ raw_command: rawCommand }),
+      });
+      // ... (identical response handling logic as in sendCommandToCore) ...
+      if (!response.ok) {
+        let errorMsg = `HTTP error! status: ${response.status}`;
+        try { const errorData = await response.json(); errorMsg = errorData.message || errorMsg; } catch (e) { /* ignore */ }
+        throw new Error(errorMsg);
+      }
+      const data = await response.json();
+      setCoreResponse(data);
+      if (data.status === "success") {
+          setFeedbackMessage("IPFS cat command processed successfully.");
+          // setIpfsCatCid(""); // Optionally clear CID input, or leave it for re-query
+      } else {
+          setFeedbackMessage(`IPFS cat command error: ${data.message}`);
+      }
+    } catch (error) {
+      console.error("Error in handleIpfsCat:", error);
+      setFeedbackMessage(`Error getting from IPFS: ${error.message}`);
+      setCoreResponse({ status: "error", message: `Network or server error: ${error.message}`, data: null });
+    } finally {
+      setIsCoreLoading(false);
+    }
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -334,50 +416,32 @@ function App() {
               {isCoreLoading ? "Sending..." : "Send to Core"}
             </button>
           </div>
-
-          {coreResponse && (
-            <div id="core-response-area" style={{ marginTop: '15px', padding: '10px', border: '1px solid #ccc', whiteSpace: 'pre-wrap', textAlign: 'left', maxHeight: '300px', overflowY: 'auto' }}>
-              <h4>Core Response:</h4>
-              <p><strong>Status:</strong> {coreResponse.status}</p>
-              <p><strong>Message:</strong></p>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{coreResponse.message}</pre>
-              {coreResponse.data && (
-                <div>
-                  <p><strong>Data:</strong></p>
-                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                    {JSON.stringify(coreResponse.data, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
-          )}
         </section>
 
         {/* NEW SECTION FOR IPFS OPERATIONS */}
         <section id="ipfs-operations">
           <h2>IPFS Operations (via OmniMind Core)</h2>
           
-          {/* IPFS Add - User types path accessible by the Core server */}
+          {/* IPFS Add */}
           <div style={{ marginTop: '15px', padding: '10px', border: '1px dashed #007bff' }}>
             <h4>Add File to IPFS</h4>
-            <p><em>Type the full local path to a file that the OmniMind Core server (running on your machine) can access. The Core will then add it to IPFS.</em></p>
+            <p><em>Type the full local path to a file that the OmniMind Core server can access.</em></p>
             <input
               type="text"
-              placeholder="e.g., ipfs_add ./my_local_file.txt"
-              value={coreCommand} // We reuse coreCommand for simplicity
-              onChange={(e) => setCoreCommand(e.target.value)}
-              onKeyPress={(e) => { if (e.key === 'Enter' && coreCommand.startsWith("ipfs_add")) sendCommandToCore(); }}
+              placeholder="e.g., ./my_local_file.txt or C:\path\to\file.txt"
+              value={ipfsAddPath}
+              onChange={(e) => setIpfsAddPath(e.target.value)}
+              onKeyPress={(e) => { if (e.key === 'Enter') handleIpfsAdd(); }}
               style={{ width: 'calc(70% - 10px)', padding: '10px', marginRight: '5px' }}
               disabled={isCoreLoading}
             />
             <button 
-              onClick={() => { if (coreCommand.startsWith("ipfs_add")) sendCommandToCore(); else setFeedbackMessage("Please type an 'ipfs_add <path>' command first."); }}
+              onClick={handleIpfsAdd}
               style={{ padding: '10px' }} 
-              disabled={isCoreLoading || !coreCommand.startsWith("ipfs_add")}
+              disabled={isCoreLoading || !ipfsAddPath.trim()}
             >
-              {isCoreLoading && coreCommand.startsWith("ipfs_add") ? "Adding..." : "Add to IPFS"}
+              {isCoreLoading && ipfsAddPath /* crude check if this button caused loading */ ? "Adding..." : "Add to IPFS"}
             </button>
-            <p style={{fontSize: '0.8em', color: 'gray'}}>Example: `ipfs_add C:\Users\YourUser\Documents\test.txt` (Windows) or `ipfs_add /home/YourUser/docs/test.txt` (Linux/macOS)</p>
             <p style={{fontSize: '0.8em', color: 'gray'}}>Ensure `omnimind-core` has permissions to read the file.</p>
           </div>
 
@@ -386,40 +450,40 @@ function App() {
             <h4>Get File from IPFS (Cat)</h4>
             <input
               type="text"
-              placeholder="e.g., ipfs_cat QmYourCID..."
-              value={coreCommand} // We reuse coreCommand
-              onChange={(e) => setCoreCommand(e.target.value)}
-              onKeyPress={(e) => { if (e.key === 'Enter' && coreCommand.startsWith("ipfs_cat")) sendCommandToCore(); }}
+              placeholder="Enter IPFS CID (e.g., QmYourCID...)"
+              value={ipfsCatCid}
+              onChange={(e) => setIpfsCatCid(e.target.value)}
+              onKeyPress={(e) => { if (e.key === 'Enter') handleIpfsCat(); }}
               style={{ width: 'calc(70% - 10px)', padding: '10px', marginRight: '5px' }}
               disabled={isCoreLoading}
             />
             <button 
-              onClick={() => { if (coreCommand.startsWith("ipfs_cat")) sendCommandToCore(); else setFeedbackMessage("Please type an 'ipfs_cat <CID>' command first."); }}
+              onClick={handleIpfsCat}
               style={{ padding: '10px' }} 
-              disabled={isCoreLoading || !coreCommand.startsWith("ipfs_cat")}
+              disabled={isCoreLoading || !ipfsCatCid.trim()}
             >
-              {isCoreLoading && coreCommand.startsWith("ipfs_cat") ? "Getting..." : "Get from IPFS"}
+              {isCoreLoading && ipfsCatCid /* crude check */ ? "Getting..." : "Get from IPFS"}
             </button>
           </div>
-
-          {/* Display area for core responses (already exists from previous step) */}
-          {coreResponse && ( /* This will display results from ipfs_add / ipfs_cat too */
-            <div id="core-response-area" style={{ marginTop: '15px', padding: '10px', border: '1px solid #ccc', whiteSpace: 'pre-wrap', textAlign: 'left', maxHeight: '300px', overflowY: 'auto' }}>
-              <h4>Core Response:</h4>
-              <p><strong>Status:</strong> {coreResponse.status}</p>
-              <p><strong>Message:</strong></p>
-              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{coreResponse.message}</pre>
-              {coreResponse.data && (
-                <div>
-                  <p><strong>Data:</strong></p>
-                  <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
-                    {JSON.stringify(coreResponse.data, null, 2)}
-                  </pre>
-                </div>
-              )}
-            </div>
-          )}
         </section> {/* End of ipfs-operations section */}
+
+        {/* Display area for core responses (this will now show results from general commands AND IPFS ops) */}
+        {coreResponse && (
+          <div id="core-response-area" style={{ marginTop: '15px', padding: '10px', border: '1px solid #ccc', whiteSpace: 'pre-wrap', textAlign: 'left', maxHeight: '300px', overflowY: 'auto' }}>
+            <h4>Core Response:</h4>
+            <p><strong>Status:</strong> {coreResponse.status}</p>
+            <p><strong>Message:</strong></p>
+            <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{coreResponse.message}</pre>
+            {coreResponse.data && (
+              <div>
+                <p><strong>Data:</strong></p>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                  {JSON.stringify(coreResponse.data, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        )}
         
         {/* We'll keep the P2P info section as a placeholder for now */}
         <section id="p2p-info">
