@@ -1,70 +1,45 @@
-# Getting Started with Create React App
+# OmniMind Client (omnimind-client)
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This directory contains the React-based web frontend for the OmniMind operating system.
 
-## Available Scripts
+## Overview
 
-In the project directory, you can run:
+omnimind-client provides a user interface for interacting with both blockchain-based components (like MindCoin) and the local omnimind-core API server.
 
-### `npm start`
+## Current Functionality
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+- Wallet Interaction (MetaMask):
+    - Connects to the user's MetaMask wallet.
+    - Displays the connected account address.
+    - Fetches and displays the user's MindCoin balance from the Sepolia testnet.
+    - Allows users to transfer MindCoin to other addresses on Sepolia.
+- OmniMind Core Interaction (via local API at `http://localhost:3030`):
+    - Provides a general command input field to send commands to omnimind-core.
+    - Provides dedicated UI controls for IPFS operations (ipfs_add <path>, ipfs_cat <cid>) that target omnimind-core.
+    - Displays structured JSON responses from omnimind-core, including status, messages, data, and NLU confidence details when applicable.
+- Deployment: The client is deployable as a static site and is currently hosted on Vercel (though core interaction features require omnimind-core to be running locally).
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## Technology Stack
 
-### `npm test`
+- Framework: React (via Create React App)
+- Language: JavaScript (with JSX)
+- Ethereum Interaction: ethers.js
+- Styling: Basic CSS (default Create React App styles + minimal inline styles)
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## Getting Started & Running
 
-### `npm run build`
+1.  Ensure Node.js and npm (or yarn) are installed.
+2.  Navigate to the omnimind-client directory.
+3.  Install dependencies:
+        npm install
+    
+4.  Start the development server:
+        # For Windows (if you encountered OpenSSL errors previously):
+    # Ensure your start script in package.json is: 
+    # "start": "set NODE_OPTIONS=--openssl-legacy-provider && react-scripts start",
+    npm start
+    
+5.  The client will run on http://localhost:3000 and attempt to connect to omnimind-core API at http://localhost:3030.
+6.  Ensure MetaMask is installed in your browser for blockchain features.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
-
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
-
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
-
-### `npm run eject`
-
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
-
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
-
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
-
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
-
-## Learn More
-
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
-
-To learn React, check out the [React documentation](https://reactjs.org/).
-
-### Code Splitting
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Refer to the main project README.md in the repository root for full setup instructions for all OmniMind components.

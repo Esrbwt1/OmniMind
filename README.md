@@ -56,6 +56,7 @@ To set up the OmniMind development environment locally:
     *   [Git](https://git-scm.com/)
     *   [Node.js](https://nodejs.org/) (LTS version, e.g., v18.x or v20.x)
     *   [Rust](https://www.rust-lang.org/tools/install) (including rustc and cargo)
+    *   [Python](https://www.python.org/) (3.7+ with `pip`) for the NLU service.
     *   A code editor like [VS Code](https://code.visualstudio.com/) with extensions for Rust (rust-analyzer) and JavaScript/React.
     *   [MetaMask Browser Extension](https://metamask.io/) (for interacting with the client and contracts).
     *   [IPFS Desktop](https://ipfs.io/desktop/) (for future P2P features - optional for current client functionality).
@@ -92,6 +93,12 @@ To set up the OmniMind development environment locally:
     cargo build
     cargo run
     
+6.  Set up `omnimind-nlu-py` (NLU Service):
+        cd omnimind-nlu-py
+    pip install transformers torch
+    # To test standalone: python nlu_server.py
+    
+    *This NLU service is automatically started as a child process by omnimind-core.*
 
 ## Roadmap (High-Level)
 
