@@ -476,6 +476,24 @@ function App() {
             <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{coreResponse.message}</pre>
             {coreResponse.data && (
               <div>
+                {/* NEW: Display NLU Confidence if available from nlu_details, nlu_confidence, or nlu_result */}
+                {coreResponse.data && 
+                 ((coreResponse.data.nlu_details && coreResponse.data.nlu_details.nlu_confidence) || 
+                  coreResponse.data.nlu_confidence || 
+                  (coreResponse.data.nlu_result && coreResponse.data.nlu_result.confidence)) && (
+                  <p style={{ fontStyle: 'italic', color: '#555', fontSize: '0.9em' }}>
+                    (Interpreted via NLU with confidence: 
+                    {
+                      ((
+                        (coreResponse.data.nlu_details && coreResponse.data.nlu_details.nlu_confidence) || 
+                        coreResponse.data.nlu_confidence || 
+                        (coreResponse.data.nlu_result && coreResponse.data.nlu_result.confidence) || 
+                        0 // Fallback to 0 if none are found
+                      ) * 100).toFixed(1)
+                    }%)
+                  </p>
+                )}
+
                 <p><strong>Data:</strong></p>
                 <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                   {JSON.stringify(coreResponse.data, null, 2)}

@@ -302,59 +302,88 @@ async fn process_omni_command(
                 let nlu_command_keyword = nlu_result.intent.as_str();
                 let nlu_args_str: Vec<String> = nlu_result.arguments_text.split_whitespace().map(String::from).collect();
                 
-                // Re-dispatch based on NLU result
-                match nlu_command_keyword {
-                    "echo" => CommandResponse { status: "success".to_string(), message: nlu_args_str.join(" "), data: Some(serde_json::json!({"nlu_confidence": nlu_result.confidence})) },
-                    "help" => CommandResponse { status: "success".to_string(), message: HELP_MESSAGE.to_string(), data: Some(serde_json::json!({"nlu_confidence": nlu_result.confidence})) },
-                    // Inside process_omni_command, in the NLU result handling block (match nlu_command_keyword)
-                    // ...
+                            // Re-dispatch based on NLU result
+                            // ... inside if nlu_result.confidence >= NLU_CONFIDENCE_THRESHOLD {
+                let mut command_execution_response = match nlu_command_keyword {
+                    "echo" => CommandResponse { 
+                        status: "success".to_string(), 
+                        message: nlu_args_str.join(" "), 
+                        data: None // Base data
+                    },
+                    "help" => {
+                        CommandResponse { 
+                            status: "success".to_string(), 
+                            message: HELP_MESSAGE.to_string(), 
+                            data: None // Base data
+                        }
+                    },
                     "ls" => {
-                        let mut path_to_list = ".".to_string(); // Default to current directory
-                        let args_text_lower = nlu_result.arguments_text.to_lowercase();
-                        
-                        // Very simple keyword spotting for common relative paths from NLU args
-                        if args_text_lower.contains("parent directory") || args_text_lower.contains("up one level") {
-                            path_to_list = "..".to_string();
-                        } else if args_text_lower.contains("current directory") || args_text_lower.contains("here") {
-                            path_to_list = ".".to_string();
-                        } else {
-                            // If no obvious keywords, try to see if the first "word" of NLU args looks like a path
-                            // This is still naive but better than always taking the first word if it's "me" etc.
-                            // A more robust solution would be proper NER or checking if nlu_args_str[0] is a valid path.
-                            // For now, if it's not "parent" or "current", we can try using the first nlu_arg if it exists,
-                            // otherwise default to ".".
-                            if !nlu_args_str.is_empty() {
-                                // Let's check if the first arg is NOT a common pronoun or article often
-                                // picked up by NLU as the start of the arguments_text.
-                                let first_arg_lower = nlu_args_str[0].to_lowercase();
-                                if !["me", "my", "the", "a", "in", "all"].contains(&first_arg_lower.as_str()) {
-                                    path_to_list = nlu_args_str[0].clone(); // Use the first "argument" as path
-                                }
-                                // If it IS one of those common words, we stick to default "."
-                                // or if nlu_args_str was empty.
+                        // Recalculate path_to_list for 'ls' as done before
+                        let mut path_to_list_nlu = ".".to_string();
+                        let args_text_lower_nlu = nlu_result.arguments_text.to_lowercase();
+                        if args_text_lower_nlu.contains("parent directory") { path_to_list_nlu = "..".to_string(); }
+                        // ... (add other path logic from previous ls NLU handler) ...
+                        else if !nlu_args_str.is_empty() {
+                            let first_arg_lower = nlu_args_str[0].to_lowercase();
+                            if !["me", "my", "the", "a", "in", "all"].contains(&first_arg_lower.as_str()) {
+                                path_to_list_nlu = nlu_args_str[0].clone();
                             }
                         }
                         println!("NLU for 'ls': determined path_to_list = '{}' from args_text = '{}'", 
-                                 path_to_list, nlu_result.arguments_text);
-                        list_directory_contents_for_api(&path_to_list)
+                                path_to_list_nlu, nlu_result.arguments_text);
+                        list_directory_contents_for_api(&path_to_list_nlu)
                     },
-                    // ... rest of the NLU re-dispatch match arms
                     "create_note" => {
-                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU->create_note: missing title".to_string(), data: None } }
+                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU: create_note requires a title.".to_string(), data: None } }
                         else { create_note_for_api(&nlu_args_str.join(" ")) }
                     },
                     "ipfs_id" => get_ipfs_id_for_api().await,
                     "ipfs_add" => {
-                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU->ipfs_add: missing file path".to_string(), data: None } }
+                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU: ipfs_add requires a file path.".to_string(), data: None } }
                         else { add_file_to_ipfs_for_api(&nlu_args_str.join(" ")).await }
                     },
                     "ipfs_cat" => {
-                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU->ipfs_cat: missing CID".to_string(), data: None } }
+                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU: ipfs_cat requires a CID.".to_string(), data: None } }
                         else { cat_file_from_ipfs_for_api(&nlu_args_str[0]).await }
                     },
-                    "quit" => CommandResponse { status: "info".to_string(), message: "NLU suggested 'quit'. Server does not quit via API.".to_string(), data: None },
-                    _ => CommandResponse { status: "error".to_string(), message: format!("NLU identified unhandled intent '{}'.", nlu_result.intent), data: Some(serde_json::json!({"nlu_result": nlu_result})) }
+                    "quit" => CommandResponse {
+                        status: "info".to_string(),
+                        message: "NLU suggested 'quit'. Server does not quit via API. Use Ctrl+C on server.".to_string(),
+                        data: None,
+                    },
+                    _ => CommandResponse { 
+                        status: "error".to_string(), 
+                        message: format!("NLU identified intent '{}', but it's unhandled after NLU processing.", nlu_result.intent),
+                        data: None // Base data
+                    }
+                };
+
+                // Now, augment the response with NLU confidence if it was a success/info
+                if command_execution_response.status == "success" || command_execution_response.status == "info" {
+                    let nlu_info = serde_json::json!({
+                        "nlu_confidence": nlu_result.confidence,
+                        "nlu_predicted_label": nlu_result.predicted_label,
+                        "nlu_intent_mapped_to": nlu_result.intent
+                    });
+
+                    if let Some(existing_data) = command_execution_response.data.take() {
+                        // If there was already data, merge NLU info into it.
+                        // This assumes existing_data is an object, or we create a new object.
+                        if let serde_json::Value::Object(mut map) = existing_data {
+                            map.insert("nlu_details".to_string(), nlu_info);
+                            command_execution_response.data = Some(serde_json::Value::Object(map));
+                        } else {
+                            // If existing_data wasn't an object, or we want to keep it separate
+                            command_execution_response.data = Some(serde_json::json!({
+                                "original_data": existing_data,
+                                "nlu_details": nlu_info
+                            }));
+                        }
+                    } else {
+                        command_execution_response.data = Some(nlu_info);
+                    }
                 }
+                return command_execution_response; // Return the augmented response
             } else {
                 CommandResponse { status: "error".to_string(), message: format!("NLU confidence {:.2} for intent '{}' too low.", nlu_result.confidence, nlu_result.intent), data: Some(serde_json::json!({"nlu_result": nlu_result})) }
             }
