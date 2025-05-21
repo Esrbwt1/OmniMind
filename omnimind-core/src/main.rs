@@ -1,164 +1,57 @@
 // src/main.rs for omnimind-core
-use std::io::{self, Write}; // Keep for potential direct output if needed
+use std::io::{self, Write, BufReader, BufRead}; // Added BufReader, BufRead
 use std::fs;
 use std::path::Path;
 use std::fs::File;
 use chrono;
-use actix_cors::Cors;
-use reqwest::multipart;
+use std::process::{Command as OsCommand, Stdio, Child, ChildStdin, ChildStdout}; // For spawning Python
+use std::sync::Mutex; // For thread-safe access to Python process handles
 
 // Actix Web and Serde imports
-use actix_web::{web, App, HttpServer, Responder, HttpResponse};
+use actix_web::{web, App, HttpServer, Responder, HttpResponse}; // Removed ActixError as it was unused
+use actix_cors::Cors;
 use serde::{Serialize, Deserialize};
+use serde_json;
 
-// --- Command Definition and Parsing Logic (from previous steps, slightly adapted) ---
-#[derive(Debug, Serialize, Deserialize, Clone)] // Added Clone, Serialize, Deserialize
-enum CommandType { // Renamed from Command to avoid conflict with a potential Command struct
-    Echo,
-    Help,
-    Quit, // Will be handled differently for server
-    ListFiles,
-    CreateNote,
-    Unknown,
+// --- Structs and Enums ---
+
+// NluResponse: Expected JSON structure from Python NLU script
+#[derive(Debug, Serialize, Deserialize)]
+struct NluResponse {
+    original_text: String,
+    intent: String,
+    predicted_label: String,
+    confidence: f64,
+    arguments_text: String,
 }
 
+// CommandRequest: Expected JSON from client to our API
 #[derive(Debug, Serialize, Deserialize)]
 struct CommandRequest {
     raw_command: String,
 }
 
-// Define a unified response structure
+// CommandResponse: Unified JSON structure from our API to client
 #[derive(Debug, Serialize)]
 struct CommandResponse {
-    status: String,        // "success" or "error"
-    message: String,       // User-friendly message or error detail
-    data: Option<serde_json::Value>, // Optional structured data (e.g., file list)
+    status: String,
+    message: String,
+    data: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct IpfsIdResponse {
-    #[serde(alias = "ID")] // Allow deserializing from "ID"
-    id: String,
-    // We can add other fields like PublicKey if needed later
+// AppState: Shared state for Actix handlers (Python process handles)
+struct AppState {
+    py_stdin: Mutex<Option<ChildStdin>>,
+    py_stdout_reader: Mutex<Option<BufReader<ChildStdout>>>,
+    #[allow(dead_code)] // py_child_process is kept to keep the process alive
+    py_child_process: Mutex<Option<Child>>, 
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct IpfsAddResponse {
-    #[serde(alias = "Name")]
-    name: String,
-    #[serde(alias = "Hash")]
-    hash: String, // This is the CID
-    #[serde(alias = "Size")]
-    size: String,
-}
+// --- Helper: Consistent Help Message ---
+const HELP_MESSAGE: &str = "Available commands:\n  echo <text>          - Prints back the text you provide.\n  ls [path]            - Lists files and directories.\n  create_note <title>  - Creates a new text note in the 'omni_notes' directory.\n  ipfs_id              - Fetches the ID of the local IPFS node.\n  ipfs_add <file_path> - Adds a local file to IPFS and returns its CID.\n  ipfs_cat <cid>       - Retrieves and displays content from IPFS for a given CID.\n  help                 - Shows this help message.";
 
-// This function will now process the command and return a CommandResponse
-// It's adapted to be called by the web handler.
-async fn process_omni_command(raw_command_str: &str) -> CommandResponse {
-    let parts: Vec<&str> = raw_command_str.trim().split_whitespace().collect();
-    if parts.is_empty() {
-        return CommandResponse {
-            status: "error".to_string(),
-            message: "Empty command received.".to_string(),
-            data: None,
-        };
-    }
 
-    let command_keyword = parts[0].to_lowercase();
-    let args_str: Vec<String> = parts.get(1..)
-        .unwrap_or(&[])
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
-    match command_keyword.as_str() {
-        "echo" => {
-            if args_str.is_empty() {
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: "Usage: echo <text to echo>".to_string(),
-                    data: None,
-                }
-            } else {
-                CommandResponse {
-                    status: "success".to_string(),
-                    message: args_str.join(" "),
-                    data: None,
-                }
-            }
-        }
-        "help" => {
-            let help_text = [
-                "Available commands:",
-                "  echo <text>          - Prints back the text you provide.",
-                "  ls [path]            - Lists files and directories.",
-                "  create_note <title>  - Creates a new text note in the 'omni_notes' directory.",
-                "  ipfs_id              - Fetches the ID of the local IPFS node.", // NEW
-                "  ipfs_add <file_path> - Adds a local file to IPFS and returns its CID.",
-                "  ipfs_cat <cid>       - Retrieves and displays content from IPFS for a given CID.",
-                "  help                 - Shows this help message.",
-                // "quit" / "exit" are not useful for a server endpoint this way
-            ].join("\n");
-            CommandResponse {
-                status: "success".to_string(),
-                message: help_text,
-                data: None,
-            }
-        }
-        "ls" => {
-            let path_to_list = args_str.get(0).map(String::as_str).unwrap_or(".");
-            list_directory_contents_for_api(path_to_list)
-        }
-        "create_note" => {
-            if args_str.is_empty() {
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: "Usage: create_note <title_of_note>".to_string(),
-                    data: None,
-                }
-            } else {
-                let title = args_str.join(" ");
-                create_note_for_api(&title)
-            }
-        }
-        "ipfs_id" => { // NOW WE CAN CALL THE ASYNC FUNCTION
-            get_ipfs_id_for_api().await // Await the async call
-        }
-        "ipfs_add" => { 
-            if args_str.is_empty() {
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: "Usage: ipfs_add <local_file_path>".to_string(),
-                    data: None,
-                }
-            } else {
-                // For now, assume the first argument is the full path.
-                // In a real OS, you'd handle relative paths, tilde expansion etc.
-                let file_path_to_add = args_str.join(" "); // If path has spaces
-                add_file_to_ipfs_for_api(&file_path_to_add).await
-            }
-        }
-        "ipfs_cat" => {
-            if args_str.is_empty() {
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: "Usage: ipfs_cat <ipfs_cid>".to_string(),
-                    data: None,
-                }
-            } else {
-                let cid_to_cat = &args_str[0]; // Assume CID is the first argument
-                cat_file_from_ipfs_for_api(cid_to_cat).await
-            }
-        }
-        _ => CommandResponse {
-            status: "error".to_string(),
-            message: format!("Unknown command: '{}'", command_keyword),
-            data: None,
-        },
-    }
-}
-
-// --- OS Command Implementations (adapted for API response) ---
+// --- OS Command Implementations (return CommandResponse) ---
 
 fn list_directory_contents_for_api(dir_path_str: &str) -> CommandResponse {
     let path = Path::new(dir_path_str);
@@ -217,7 +110,7 @@ fn create_note_for_api(title: &str) -> CommandResponse {
                     data: Some(serde_json::json!({ "path": file_path.display().to_string() })),
                 },
                 Err(e) => CommandResponse {
-                    status: "success".to_string(), // File created, but content write failed
+                    status: "success".to_string(), 
                     message: format!("Created empty note: '{}', but failed to write content: {}", file_path.display(), e),
                     data: Some(serde_json::json!({ "path": file_path.display().to_string() })),
                 },
@@ -228,217 +121,324 @@ fn create_note_for_api(title: &str) -> CommandResponse {
 }
 
 async fn get_ipfs_id_for_api() -> CommandResponse {
-    let ipfs_api_url = "http://127.0.0.1:5001/api/v0/id"; // Default IPFS daemon API URL for id
-
-    // Ensure your IPFS Desktop daemon is running and API is accessible at this address.
-    // You can test in browser: http://127.0.0.1:5001/api/v0/id (might show error if not from allowed origin, but daemon should log access attempt)
-    // Or with curl: curl -X POST http://127.0.0.1:5001/api/v0/id
-
+    let ipfs_api_url = "http://127.0.0.1:5001/api/v0/id";
     let client = reqwest::Client::new();
     match client.post(ipfs_api_url).send().await {
         Ok(response) => {
             if response.status().is_success() {
-                match response.json::<IpfsIdResponse>().await {
+                match response.json::<IpfsIdResponse>().await { // IpfsIdResponse needs to be defined
                     Ok(ipfs_id_data) => CommandResponse {
                         status: "success".to_string(),
                         message: "Successfully fetched IPFS Node ID.".to_string(),
                         data: Some(serde_json::json!({ "ipfsNodeId": ipfs_id_data.id })),
                     },
-                    Err(e) => CommandResponse {
-                        status: "error".to_string(),
-                        message: format!("Failed to parse IPFS ID response: {}", e),
-                        data: None,
-                    },
-                }
-            } else {
-                let status_code = response.status(); // Get status BEFORE consuming response
-                let error_text = response.text().await.unwrap_or_else(|e| format!("Unknown error and failed to get error text: {}", e));
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: format!("IPFS API request failed with status {}: {}", status_code, error_text), // Use status_code
-                    data: None,
-                }
-            }
-        }
-        Err(e) => CommandResponse {
-            status: "error".to_string(),
-            message: format!("Failed to connect to IPFS API: {}. Ensure IPFS daemon is running and API server is enabled at {}.", e, ipfs_api_url),
-            data: None,
-        },
-    }
-}
-
-async fn add_file_to_ipfs_for_api(local_file_path_str: &str) -> CommandResponse {
-    let file_path = Path::new(local_file_path_str);
-
-    if !file_path.exists() {
-        return CommandResponse { status: "error".to_string(), message: format!("Local file '{}' does not exist.", local_file_path_str), data: None };
-    }
-    if !file_path.is_file() {
-        return CommandResponse { status: "error".to_string(), message: format!("Path '{}' is not a file.", local_file_path_str), data: None };
-    }
-
-    // Read file content. For large files, streaming would be better.
-    // For MVP, reading into memory is simpler.
-    let file_content_bytes = match fs::read(file_path) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            return CommandResponse { status: "error".to_string(), message: format!("Failed to read local file '{}': {}", local_file_path_str, e), data: None };
-        }
-    };
-
-    let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-
-    // Create a multipart part for the file
-    let part = match multipart::Part::bytes(file_content_bytes)
-        .file_name(file_name.clone()) // Set the filename for the part
-        .mime_str("application/octet-stream") 
-    {
-        Ok(p) => p,
-        Err(e) => {
-             return CommandResponse { status: "error".to_string(), message: format!("Failed to create multipart part for file: {}", e), data: None };
-        }
-    };
-
-
-    // Create the multipart form
-    let form = multipart::Form::new().part("file", part); // The field name "file" is expected by IPFS /add
-
-    let ipfs_api_url = "http://127.0.0.1:5001/api/v0/add";
-    let client = reqwest::Client::new();
-
-    match client.post(ipfs_api_url)
-        .multipart(form)
-        .send()
-        .await 
-    {
-        Ok(response) => {
-            if response.status().is_success() {
-                match response.json::<IpfsAddResponse>().await {
-                    Ok(add_data) => CommandResponse {
-                        status: "success".to_string(),
-                        message: format!("File '{}' successfully added to IPFS.", add_data.name),
-                        data: Some(serde_json::json!({
-                            "fileName": add_data.name,
-                            "cid": add_data.hash,
-                            "size": add_data.size
-                        })),
-                    },
-                    Err(e) => CommandResponse {
-                        status: "error".to_string(),
-                        message: format!("Successfully uploaded but failed to parse IPFS add response: {}", e),
-                        data: None, // You could include raw response text here if helpful
-                    },
+                    Err(e) => CommandResponse { status: "error".to_string(), message: format!("Failed to parse IPFS ID response: {}", e), data: None },
                 }
             } else {
                 let status_code = response.status();
                 let error_text = response.text().await.unwrap_or_else(|e| format!("Unknown error and failed to get error text: {}", e));
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: format!("IPFS API /add request failed with status {}: {}", status_code, error_text),
-                    data: None,
-                }
+                CommandResponse { status: "error".to_string(), message: format!("IPFS API request failed with status {}: {}", status_code, error_text), data: None }
             }
         }
-        Err(e) => CommandResponse {
-            status: "error".to_string(),
-            message: format!("Failed to connect to IPFS API for /add: {}. Ensure IPFS daemon is running.", e),
-            data: None,
-        },
+        Err(e) => CommandResponse { status: "error".to_string(), message: format!("Failed to connect to IPFS API: {}. Ensure IPFS daemon is running and API server is enabled at {}.", e, ipfs_api_url), data: None },
     }
+}
+// We need IpfsIdResponse struct from previous step
+#[derive(Debug, Serialize, Deserialize)]
+struct IpfsIdResponse {
+    #[serde(alias = "ID")]
+    id: String,
 }
 
 
-async fn cat_file_from_ipfs_for_api(cid_str: &str) -> CommandResponse {
-    // Basic CID validation (very simple, not exhaustive)
-    if !cid_str.starts_with("Qm") && !cid_str.starts_with("ba") { // Common v0 and v1 prefixes
-        return CommandResponse { status: "error".to_string(), message: format!("Invalid CID format: '{}'. CIDs usually start with 'Qm' (v0) or 'ba' (v1).", cid_str), data: None };
-    }
-    if cid_str.len() < 46 { // Typical CID length
-         return CommandResponse { status: "error".to_string(), message: format!("CID '{}' seems too short.", cid_str), data: None };
-    }
+async fn add_file_to_ipfs_for_api(local_file_path_str: &str) -> CommandResponse {
+    let file_path = Path::new(local_file_path_str);
+    if !file_path.exists() { /* ... error handling ... */ return CommandResponse { status: "error".to_string(), message: format!("Local file '{}' does not exist.", local_file_path_str), data: None }; }
+    if !file_path.is_file() { /* ... error handling ... */ return CommandResponse { status: "error".to_string(), message: format!("Path '{}' is not a file.", local_file_path_str), data: None };}
 
-
-    let ipfs_api_url = format!("http://127.0.0.1:5001/api/v0/cat?arg={}", cid_str);
+    let file_content_bytes = match fs::read(file_path) { Ok(bytes) => bytes, Err(e) => { return CommandResponse { status: "error".to_string(), message: format!("Failed to read local file '{}': {}", local_file_path_str, e), data: None }; } };
+    let file_name = file_path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let part = match reqwest::multipart::Part::bytes(file_content_bytes).file_name(file_name.clone()).mime_str("application/octet-stream") { Ok(p) => p, Err(e) => { return CommandResponse { status: "error".to_string(), message: format!("Failed to create multipart part: {}", e), data: None }; }};
+    let form = reqwest::multipart::Form::new().part("file", part);
+    let ipfs_api_url = "http://127.0.0.1:5001/api/v0/add";
     let client = reqwest::Client::new();
 
-    match client.post(&ipfs_api_url) // IPFS /cat is a POST endpoint expecting the CID as an arg
-        .send()
-        .await 
-    {
+    match client.post(ipfs_api_url).multipart(form).send().await {
         Ok(response) => {
             if response.status().is_success() {
-                match response.text().await { // Get the content as text
+                match response.json::<IpfsAddResponse>().await { // IpfsAddResponse needs to be defined
+                    Ok(add_data) => CommandResponse {
+                        status: "success".to_string(),
+                        message: format!("File '{}' successfully added to IPFS.", add_data.name),
+                        data: Some(serde_json::json!({ "fileName": add_data.name, "cid": add_data.hash, "size": add_data.size })),
+                    },
+                    Err(e) => CommandResponse { status: "error".to_string(), message: format!("Successfully uploaded but failed to parse IPFS add response: {}", e), data: None },
+                }
+            } else { /* ... error handling for non-success status ... */ 
+                let status_code = response.status();
+                let error_text = response.text().await.unwrap_or_else(|e| format!("Unknown error: {}", e));
+                CommandResponse { status: "error".to_string(), message: format!("IPFS API /add failed with {}: {}", status_code, error_text), data: None }
+            }
+        }
+        Err(e) => CommandResponse { status: "error".to_string(), message: format!("Failed to connect to IPFS API /add: {}", e), data: None },
+    }
+}
+// We need IpfsAddResponse struct from previous step
+#[derive(Debug, Serialize, Deserialize)]
+struct IpfsAddResponse {
+    #[serde(alias = "Name")]
+    name: String,
+    #[serde(alias = "Hash")]
+    hash: String,
+    #[serde(alias = "Size")]
+    size: String,
+}
+
+async fn cat_file_from_ipfs_for_api(cid_str: &str) -> CommandResponse {
+    if (!cid_str.starts_with("Qm") && !cid_str.starts_with("ba")) || cid_str.len() < 46 { /* ... error handling ... */ return CommandResponse { status: "error".to_string(), message: format!("Invalid CID format: '{}'", cid_str), data: None }; }
+    let ipfs_api_url = format!("http://127.0.0.1:5001/api/v0/cat?arg={}", cid_str);
+    let client = reqwest::Client::new();
+    match client.post(&ipfs_api_url).send().await {
+        Ok(response) => {
+            if response.status().is_success() {
+                match response.text().await {
                     Ok(content) => CommandResponse {
                         status: "success".to_string(),
                         message: format!("Successfully retrieved content for CID: {}", cid_str),
                         data: Some(serde_json::json!({ "cid": cid_str, "content": content })),
                     },
-                    Err(e) => CommandResponse {
-                        status: "error".to_string(),
-                        message: format!("Successfully connected but failed to read content for CID {}: {}", cid_str, e),
-                        data: None,
-                    },
+                    Err(e) => CommandResponse { status: "error".to_string(), message: format!("Failed to read content for CID {}: {}", cid_str, e), data: None },
                 }
-            } else {
+            } else { /* ... detailed error handling for non-success status ... */ 
                 let status_code = response.status();
-                // Try to get error text from IPFS, which might be plain text or JSON
                 let error_body = response.text().await.unwrap_or_else(|e| format!("Failed to read error body: {}", e));
                 let mut error_message_from_ipfs = error_body.clone();
-
-                // IPFS errors are sometimes JSON like {"Message": "...", "Code": 0, "Type": "error"}
                 if let Ok(json_error) = serde_json::from_str::<serde_json::Value>(&error_body) {
-                    if let Some(msg) = json_error.get("Message").and_then(|v| v.as_str()) {
-                        error_message_from_ipfs = msg.to_string();
-                    }
+                    if let Some(msg) = json_error.get("Message").and_then(|v| v.as_str()) { error_message_from_ipfs = msg.to_string(); }
                 }
-                
-                CommandResponse {
-                    status: "error".to_string(),
-                    message: format!("IPFS API /cat request for CID {} failed with status {}: {}", cid_str, status_code, error_message_from_ipfs),
-                    data: None,
-                }
+                CommandResponse { status: "error".to_string(), message: format!("IPFS API /cat for {} failed with {}: {}", cid_str, status_code, error_message_from_ipfs), data: None }
             }
         }
-        Err(e) => CommandResponse {
-            status: "error".to_string(),
-            message: format!("Failed to connect to IPFS API for /cat (CID: {}): {}. Ensure IPFS daemon is running.", cid_str, e),
-            data: None,
+        Err(e) => CommandResponse { status: "error".to_string(), message: format!("Failed to connect to IPFS API /cat (CID: {}): {}", cid_str, e), data: None },
+    }
+}
+
+
+// --- Main Command Processing Logic (now includes NLU fallback) ---
+async fn process_omni_command(
+    raw_command_str: &str,
+    app_state: web::Data<AppState>, // Pass AppState here
+) -> CommandResponse {
+    let parts: Vec<&str> = raw_command_str.trim().split_whitespace().collect();
+    if parts.is_empty() {
+        return CommandResponse { status: "error".to_string(), message: "Empty command.".to_string(), data: None };
+    }
+
+    let command_keyword = parts[0].to_lowercase();
+    let args_str: Vec<String> = parts.get(1..).unwrap_or(&[]).iter().map(|s| s.to_string()).collect();
+
+    // --- Hybrid Approach: Try keyword match first ---
+    let direct_match_result = match command_keyword.as_str() {
+        "echo" => Some(CommandResponse { 
+            status: "success".to_string(), 
+            message: args_str.join(" "), 
+            data: None 
+        }),
+        "help" => Some(CommandResponse { 
+            status: "success".to_string(), 
+            message: HELP_MESSAGE.to_string(), 
+            data: None 
+        }),
+        "ls" => Some(list_directory_contents_for_api(args_str.get(0).map(String::as_str).unwrap_or("."))),
+        "create_note" => {
+            if args_str.is_empty() { Some(CommandResponse { status: "error".to_string(), message: "Usage: create_note <title_of_note>".to_string(), data: None }) } 
+            else { Some(create_note_for_api(&args_str.join(" "))) }
         },
+        "ipfs_id" => Some(get_ipfs_id_for_api().await),
+        "ipfs_add" => {
+            if args_str.is_empty() { Some(CommandResponse { status: "error".to_string(), message: "Usage: ipfs_add <local_file_path>".to_string(), data: None }) }
+            else { Some(add_file_to_ipfs_for_api(&args_str.join(" ")).await) }
+        },
+        "ipfs_cat" => {
+            if args_str.is_empty() { Some(CommandResponse { status: "error".to_string(), message: "Usage: ipfs_cat <ipfs_cid>".to_string(), data: None }) }
+            else { Some(cat_file_from_ipfs_for_api(&args_str[0]).await) }
+        },
+        _ => None, // No direct keyword match
+    };
+
+    if let Some(response) = direct_match_result {
+        return response; // Return if keyword matched
+    }
+
+    // --- If no direct keyword match, try NLU fallback ---
+    println!("No direct command match for '{}'. Trying NLU fallback...", raw_command_str.trim());
+    
+    let py_stdin_opt = app_state.py_stdin.lock();
+    let py_stdout_reader_opt = app_state.py_stdout_reader.lock();
+
+    let mut py_stdin_guard = match py_stdin_opt { Ok(g) => g, Err(_) => return CommandResponse { status: "error".to_string(), message: "NLU stdin lock error".to_string(), data: None }};
+    let mut py_stdout_reader_guard = match py_stdout_reader_opt { Ok(g) => g, Err(_) => return CommandResponse { status: "error".to_string(), message: "NLU stdout lock error".to_string(), data: None }};
+
+    let py_stdin = match py_stdin_guard.as_mut() { Some(s) => s, None => return CommandResponse { status: "error".to_string(), message: "NLU stdin not available.".to_string(), data: None }};
+    let py_stdout_reader = match py_stdout_reader_guard.as_mut() { Some(r) => r, None => return CommandResponse { status: "error".to_string(), message: "NLU stdout not available.".to_string(), data: None }};
+    
+    if writeln!(py_stdin, "{}", raw_command_str.trim()).is_err() || py_stdin.flush().is_err() {
+        eprintln!("Failed to write/flush to Python NLU stdin.");
+        return CommandResponse { status: "error".to_string(), message: "Failed to send command to NLU service.".to_string(), data: None };
+    }
+
+    let mut nlu_response_json_str = String::new();
+    if py_stdout_reader.read_line(&mut nlu_response_json_str).is_err() {
+        eprintln!("Failed to read from Python NLU stdout.");
+        return CommandResponse { status: "error".to_string(), message: "Failed to receive response from NLU service.".to_string(), data: None };
+    }
+
+    match serde_json::from_str::<NluResponse>(nlu_response_json_str.trim()) {
+        Ok(nlu_result) => {
+            println!("NLU Result: intent='{}', confidence={:.2}, args='{}'", 
+                     nlu_result.intent, nlu_result.confidence, nlu_result.arguments_text);
+            const NLU_CONFIDENCE_THRESHOLD: f64 = 0.5;
+            if nlu_result.confidence >= NLU_CONFIDENCE_THRESHOLD {
+                let nlu_command_keyword = nlu_result.intent.as_str();
+                let nlu_args_str: Vec<String> = nlu_result.arguments_text.split_whitespace().map(String::from).collect();
+                
+                // Re-dispatch based on NLU result
+                match nlu_command_keyword {
+                    "echo" => CommandResponse { status: "success".to_string(), message: nlu_args_str.join(" "), data: Some(serde_json::json!({"nlu_confidence": nlu_result.confidence})) },
+                    "help" => CommandResponse { status: "success".to_string(), message: HELP_MESSAGE.to_string(), data: Some(serde_json::json!({"nlu_confidence": nlu_result.confidence})) },
+                    // Inside process_omni_command, in the NLU result handling block (match nlu_command_keyword)
+                    // ...
+                    "ls" => {
+                        let mut path_to_list = ".".to_string(); // Default to current directory
+                        let args_text_lower = nlu_result.arguments_text.to_lowercase();
+                        
+                        // Very simple keyword spotting for common relative paths from NLU args
+                        if args_text_lower.contains("parent directory") || args_text_lower.contains("up one level") {
+                            path_to_list = "..".to_string();
+                        } else if args_text_lower.contains("current directory") || args_text_lower.contains("here") {
+                            path_to_list = ".".to_string();
+                        } else {
+                            // If no obvious keywords, try to see if the first "word" of NLU args looks like a path
+                            // This is still naive but better than always taking the first word if it's "me" etc.
+                            // A more robust solution would be proper NER or checking if nlu_args_str[0] is a valid path.
+                            // For now, if it's not "parent" or "current", we can try using the first nlu_arg if it exists,
+                            // otherwise default to ".".
+                            if !nlu_args_str.is_empty() {
+                                // Let's check if the first arg is NOT a common pronoun or article often
+                                // picked up by NLU as the start of the arguments_text.
+                                let first_arg_lower = nlu_args_str[0].to_lowercase();
+                                if !["me", "my", "the", "a", "in", "all"].contains(&first_arg_lower.as_str()) {
+                                    path_to_list = nlu_args_str[0].clone(); // Use the first "argument" as path
+                                }
+                                // If it IS one of those common words, we stick to default "."
+                                // or if nlu_args_str was empty.
+                            }
+                        }
+                        println!("NLU for 'ls': determined path_to_list = '{}' from args_text = '{}'", 
+                                 path_to_list, nlu_result.arguments_text);
+                        list_directory_contents_for_api(&path_to_list)
+                    },
+                    // ... rest of the NLU re-dispatch match arms
+                    "create_note" => {
+                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU->create_note: missing title".to_string(), data: None } }
+                        else { create_note_for_api(&nlu_args_str.join(" ")) }
+                    },
+                    "ipfs_id" => get_ipfs_id_for_api().await,
+                    "ipfs_add" => {
+                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU->ipfs_add: missing file path".to_string(), data: None } }
+                        else { add_file_to_ipfs_for_api(&nlu_args_str.join(" ")).await }
+                    },
+                    "ipfs_cat" => {
+                        if nlu_args_str.is_empty() { CommandResponse { status: "error".to_string(), message: "NLU->ipfs_cat: missing CID".to_string(), data: None } }
+                        else { cat_file_from_ipfs_for_api(&nlu_args_str[0]).await }
+                    },
+                    "quit" => CommandResponse { status: "info".to_string(), message: "NLU suggested 'quit'. Server does not quit via API.".to_string(), data: None },
+                    _ => CommandResponse { status: "error".to_string(), message: format!("NLU identified unhandled intent '{}'.", nlu_result.intent), data: Some(serde_json::json!({"nlu_result": nlu_result})) }
+                }
+            } else {
+                CommandResponse { status: "error".to_string(), message: format!("NLU confidence {:.2} for intent '{}' too low.", nlu_result.confidence, nlu_result.intent), data: Some(serde_json::json!({"nlu_result": nlu_result})) }
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to parse NLU JSON response: {}. Raw: '{}'", e, nlu_response_json_str.trim());
+            CommandResponse { status: "error".to_string(), message: "Error processing NLU response.".to_string(), data: None }
+        }
     }
 }
 
 // --- Actix Web Handler ---
-async fn handle_command_request(req: web::Json<CommandRequest>) -> impl Responder {
-    // Log the received command (optional)
-    // println!("Received command via API: {}", req.raw_command);
-    
-    let response = process_omni_command(&req.raw_command).await; // Add .await here
-    HttpResponse::Ok().json(response) // Always return Ok for the HTTP response itself; actual success/error is in JSON
+async fn handle_command_request(
+    req: web::Json<CommandRequest>,
+    app_state: web::Data<AppState>, // Inject AppState
+) -> impl Responder {
+    let response = process_omni_command(&req.raw_command, app_state).await;
+    HttpResponse::Ok().json(response)
 }
 
 // --- Main function to start the server ---
-#[actix_web::main] // Macro to setup Actix runtime
+#[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let server_address = "127.0.0.1:3030"; // OmniMind Core API server
-    println!("🚀 OmniMind Core API server starting on http://{}", server_address);
+    println!("🚀 OmniMind Core API server starting...");
+
+    let python_executable = "python"; // Or "python3"
+    // IMPORTANT: Adjust this path if omnimind-core is not run from its own directory
+    // For now, assumes `cargo run` is executed from within `omnimind-core/`
+    let nlu_script_path = "../omnimind-nlu-py/nlu_server.py"; 
+
+    println!("Attempting to spawn Python NLU script: {} {}", python_executable, nlu_script_path);
+
+    let mut py_process_cmd = OsCommand::new(python_executable);
+    py_process_cmd.arg(nlu_script_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit()); // Inherit stderr to see Python logs/errors directly
+
+    // Set current directory for the Python script if needed, so it can find models if using relative paths.
+    // For Hugging Face cache, this is usually not needed as it uses user's home dir.
+    // py_process_cmd.current_dir("../omnimind-nlu-py/"); // Example if script needs specific CWD
+
+    let mut py_process = match py_process_cmd.spawn() {
+        Ok(child) => {
+            println!("✅ Python NLU script spawned successfully (PID: {}).", child.id());
+            child
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to spawn Python NLU script: {}", e);
+            eprintln!("Ensure Python is installed ('{}') and accessible via PATH.", python_executable);
+            eprintln!("Ensure the script exists at relative path: '{}' from where omnimind-core is run.", nlu_script_path);
+            std::process::exit(1); 
+        }
+    };
+
+    let py_stdin = py_process.stdin.take().expect("Failed to open Python stdin pipe");
+    let py_stdout = py_process.stdout.take().expect("Failed to open Python stdout pipe");
+    let py_stdout_reader = BufReader::new(py_stdout);
+    
+    let app_state = web::Data::new(AppState {
+        py_stdin: Mutex::new(Some(py_stdin)),
+        py_stdout_reader: Mutex::new(Some(py_stdout_reader)),
+        py_child_process: Mutex::new(Some(py_process)),
+    });
+
+    let server_address = "127.0.0.1:3030";
+    println!("🎧 OmniMind Core API server listening on http://{}", server_address);
     println!("Send POST requests to /command with JSON: {{ \"raw_command\": \"your command here\" }}");
 
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         let cors = Cors::default()
-            .allowed_origin("http://localhost:3000") // Allow your React app's origin
-            .allowed_methods(vec!["GET", "POST"])    // Allow POST and GET (if you add GET later)
-            .allowed_headers(vec![actix_web::http::header::AUTHORIZATION, actix_web::http::header::ACCEPT, actix_web::http::header::CONTENT_TYPE])
-            .max_age(3600);
+              .allowed_origin("http://localhost:3000") 
+              .allowed_methods(vec!["GET", "POST"])   
+              .allowed_headers(vec![actix_web::http::header::AUTHORIZATION, actix_web::http::header::ACCEPT, actix_web::http::header::CONTENT_TYPE])
+              .max_age(3600);
 
         App::new()
-            .wrap(cors) // Add CORS middleware
+            .app_data(app_state.clone()) 
+            .wrap(cors)
             .route("/command", web::post().to(handle_command_request))
     })
     .bind(server_address)?
     .run()
     .await
+    // Graceful shutdown of Python script would go here if we implement it.
+    // For example, by taking py_child_process from app_state and sending "__EXIT__" or killing it.
 }
-
-// Note: The old interactive CLI loop is removed for this server version.
-// It could be added back as an optional mode or a separate binary later.
